@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deteksi Ngantuk dan Senyum</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #333;
+        }
+        #video-container {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        #video {
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            border-radius: 8px;
+        }
+        #status {
+            padding: 15px;
+            border-radius: 8px;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            width: 640px;
+            max-width: 100%;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+        }
+        #status.normal {
+            background-color: #d4edda;
+            color: #155724;
+            border: 2px solid #c3e6cb;
+        }
+        #status.alert {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+            animation: blink 1s infinite;
+        }
+        #status.warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 2px solid #ffeaa7;
+        }
+        #info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            width: 640px;
+            max-width: 100%;
+        }
+        .info-box {
+            background-color: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .info-box h3 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        button {
+            padding: 12px 24px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #alert-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        .alert-box {
+            background-color: #ff4444;
+            color: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            animation: slideIn 0.5s ease-out;
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.7; }
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); }
+            to { transform: translateX(0); }
+        }
+    </style>
+</head>
+<body>
+    <h1>Deteksi Ngantuk dan Senyum</h1>
+    
+    <div id="video-container">
+        <video id="video" width="640" height="480" autoplay playsinline></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+    
+    <div id="status" class="normal">
+        Status: Normal
+    </div>
+    
+    <div id="info">
+        <div class="info-box">
+            <h3>Metrics</h3>
+            <p>EAR (Mata): <span id="ear-value">0.00</span></p>
+            <p>MAR (Mulut): <span id="mar-value">0.00</span></p>
+            <p>Threshold EAR: <span id="ear-threshold">0.25</span></p>
+        </div>
+        <div class="info-box">
+            <h3>Deteksi</h3>
+            <p>Deteksi Senyum: <span id="smile-value">Tidak</span></p>
+            <p>Deteksi Menguap: <span id="yawn-value">Tidak</span></p>
+            <p>Mata Tertutup: <span id="eyes-closed">0.0s</span></p>
+        </div>
+    </div>
+    
+    <div>
+        <button id="start-btn">Mulai Deteksi</button>
+        <button id="stop-btn">Hentikan</button>
+    </div>
+
+    <div id="alert-container"></div>
+
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+    <script>
+        // --- Inisialisasi ---
+        const EAR_THRESHOLD = 0.25;
+        const EAR_SMILE_THRESHOLD = 0.20;
+        const EYE_CLOSED_SHORT = 3; // detik
+        const EYE_CLOSED_LONG = 30; // detik
+        const YAWN_DURATION = 2; // detik
+
+        // --- Landmark untuk MediaPipe Face Mesh ---
+        // Mata kiri
+        const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+        const LEFT_EYE_TOP = 159;    // Kelopak atas
+        const LEFT_EYE_BOTTOM = 145; // Kelopak bawah
+        const LEFT_EYE_LEFT = 33;    // Sudut kiri
+        const LEFT_EYE_RIGHT = 133;  // Sudut kanan
+
+        // Mata kanan  
+        const RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+        const RIGHT_EYE_TOP = 386;   // Kelopak atas
+        const RIGHT_EYE_BOTTOM = 374; // Kelopak bawah
+        const RIGHT_EYE_LEFT = 362;  // Sudut kiri
+        const RIGHT_EYE_RIGHT = 263; // Sudut kanan
+
+        // Mulut
+        const MOUTH_INNER_UPPER = 13;
+        const MOUTH_INNER_LOWER = 14;
+        const MOUTH_INNER_LEFT = 78;
+        const MOUTH_INNER_RIGHT = 308;
+
+        // Senyum
+        const SMILE_LEFT_CORNER = 61;
+        const SMILE_RIGHT_CORNER = 291;
+        const SMILE_UPPER_LIP = 0;
+        const SMILE_LOWER_LIP = 17;
+
+        // --- Variabel global ---
+        let eyeClosedStart = null;
+        let yawnStart = null;
+        let yawnCounter = 0;
+        let smileCounter = 0;
+        let yawnFramesRequired = 5;
+        let smileFramesRequired = 3;
+        let isDetecting = false;
+        let faceMesh;
+        let camera;
+        let lastAlertTime = 0;
+        const ALERT_COOLDOWN = 3000; // 3 detik cooldown antara alert
+
+        // --- Elemen DOM ---
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusElement = document.getElementById('status');
+        const earValueElement = document.getElementById('ear-value');
+        const marValueElement = document.getElementById('mar-value');
+        const earThresholdElement = document.getElementById('ear-threshold');
+        const smileValueElement = document.getElementById('smile-value');
+        const yawnValueElement = document.getElementById('yawn-value');
+        const eyesClosedElement = document.getElementById('eyes-closed');
+        const startButton = document.getElementById('start-btn');
+        const stopButton = document.getElementById('stop-btn');
+        const alertContainer = document.getElementById('alert-container');
+
+        // --- Fungsi Jarak Euclidean ---
+        function euclideanDist(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        // --- Eye Aspect Ratio yang BENAR untuk MediaPipe ---
+        function calculateEAR(eyeLandmarks) {
+            // Rasio aspek mata dihitung berdasarkan rumus standar
+            // EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
+            
+            // Untuk MediaPipe, kita gunakan landmark yang sesuai
+            const [p1, p2, p3, p4, p5, p6] = [
+                eyeLandmarks[0],  // Sudut kiri
+                eyeLandmarks[1],  // Titik atas
+                eyeLandmarks[2],  // Titik atas tengah
+                eyeLandmarks[3],  // Sudut kanan
+                eyeLandmarks[4],  // Titik bawah tengah
+                eyeLandmarks[5]   // Titik bawah
+            ];
+
+            const A = euclideanDist(p2, p6); // Jarak vertikal 1
+            const B = euclideanDist(p3, p5); // Jarak vertikal 2
+            const C = euclideanDist(p1, p4); // Jarak horizontal
+
+            return (A + B) / (2 * C);
+        }
+
+        // --- Deteksi Senyum ---
+        function isSmiling(landmarks, width, height) {
+            try {
+                const leftCorner = {
+                    x: landmarks[SMILE_LEFT_CORNER].x * width,
+                    y: landmarks[SMILE_LEFT_CORNER].y * height
+                };
+                const rightCorner = {
+                    x: landmarks[SMILE_RIGHT_CORNER].x * width,
+                    y: landmarks[SMILE_RIGHT_CORNER].y * height
+                };
+                const upperLip = {
+                    x: landmarks[SMILE_UPPER_LIP].x * width,
+                    y: landmarks[SMILE_UPPER_LIP].y * height
+                };
+                const lowerLip = {
+                    x: landmarks[SMILE_LOWER_LIP].x * width,
+                    y: landmarks[SMILE_LOWER_LIP].y * height
+                };
+                
+                const smileWidth = euclideanDist(leftCorner, rightCorner);
+                const smileHeight = euclideanDist(upperLip, lowerLip);
+                
+                if (smileHeight === 0) return false;
+                
+                const smileRatio = smileWidth / smileHeight;
+                
+                const isWideSmile = smileWidth > 50; // Disesuaikan
+                const isSmallHeight = smileHeight < 20;
+                const isSmileRatioHigh = smileRatio > 3.0;
+                
+                return isWideSmile && isSmallHeight && isSmileRatioHigh;
+            } catch (error) {
+                console.error("Error in smile detection:", error);
+                return false;
+            }
+        }
+
+        // --- Deteksi Menguap ---
+        function isYawning(landmarks, width, height) {
+            try {
+                const innerTop = {
+                    x: landmarks[MOUTH_INNER_UPPER].x * width,
+                    y: landmarks[MOUTH_INNER_UPPER].y * height
+                };
+                const innerBottom = {
+                    x: landmarks[MOUTH_INNER_LOWER].x * width,
+                    y: landmarks[MOUTH_INNER_LOWER].y * height
+                };
+                const innerLeft = {
+                    x: landmarks[MOUTH_INNER_LEFT].x * width,
+                    y: landmarks[MOUTH_INNER_LEFT].y * height
+                };
+                const innerRight = {
+                    x: landmarks[MOUTH_INNER_RIGHT].x * width,
+                    y: landmarks[MOUTH_INNER_RIGHT].y * height
+                };
+
+                const innerHeight = euclideanDist(innerTop, innerBottom);
+                const innerWidth = euclideanDist(innerLeft, innerRight);
+                
+                if (innerWidth === 0) return { mar: 0.0, isYawn: false };
+
+                const mar = innerHeight / innerWidth;
+                
+                // Kondisi menguap yang lebih sederhana
+                const isMarHigh = mar > 0.5; // Disesuaikan
+                const isNotTooWide = innerWidth < 120;
+                
+                const isSmile = isSmiling(landmarks, width, height);
+                
+                const isYawn = isMarHigh && isNotTooWide && !isSmile;
+                
+                return { mar: mar, isYawn: isYawn };
+            } catch (error) {
+                console.error("Error in yawn detection:", error);
+                return { mar: 0.0, isYawn: false };
+            }
+        }
+
+        // --- Fungsi untuk menampilkan alert ---
+        function showAlert(message, type = 'warning') {
+            const now = Date.now();
+            if (now - lastAlertTime < ALERT_COOLDOWN) return;
+            
+            lastAlertTime = now;
+            
+            const alertBox = document.createElement('div');
+            alertBox.className = `alert-box ${type}`;
+            alertBox.textContent = message;
+            alertBox.style.backgroundColor = type === 'danger' ? '#ff4444' : 
+                                           type === 'warning' ? '#ff9800' : '#4CAF50';
+            
+            alertContainer.appendChild(alertBox);
+            
+            // Hapus alert setelah 5 detik
+            setTimeout(() => {
+                if (alertBox.parentNode) {
+                    alertBox.parentNode.removeChild(alertBox);
+                }
+            }, 5000);
+        }
+
+        // --- Fungsi untuk menggambar status ---
+        function drawStatus(status, color, ear, mar, smileCount, yawnCount, eyesClosedTime) {
+            statusElement.textContent = `Status: ${status}`;
+            statusElement.style.color = color;
+            statusElement.className = '';
+            
+            if (status.includes('PARAH') || status.includes('SEATBELT')) {
+                statusElement.classList.add('alert');
+            } else if (status.includes('NGANTUK') || status.includes('MENGUAP')) {
+                statusElement.classList.add('warning');
+            } else {
+                statusElement.classList.add('normal');
+            }
+            
+            // Update info values
+            earValueElement.textContent = ear.toFixed(3);
+            marValueElement.textContent = mar.toFixed(3);
+            earThresholdElement.textContent = EAR_THRESHOLD.toFixed(2);
+            smileValueElement.textContent = smileCount >= smileFramesRequired ? 'Ya' : 'Tidak';
+            yawnValueElement.textContent = yawnCount >= yawnFramesRequired ? 'Ya' : 'Tidak';
+            eyesClosedElement.textContent = eyesClosedTime ? eyesClosedTime.toFixed(1) + 's' : '0.0s';
+            
+            // Warna metrics berdasarkan kondisi
+            earValueElement.style.color = ear < EAR_THRESHOLD ? '#ff4444' : '#4CAF50';
+            marValueElement.style.color = mar > 0.5 ? '#ff9800' : '#4CAF50';
+        }
+
+        // --- Fungsi utama untuk memproses hasil deteksi ---
+        function onResults(results) {
+            if (!isDetecting) return;
+            
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            
+            let alertShort = false;
+            let alertLong = false;
+            let alertYawn = false;
+            let currentYawnDetected = false;
+            let currentSmileDetected = false;
+            let ear = 0;
+            let mar = 0;
+            let eyesClosedTime = 0;
+            
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                const width = canvasElement.width;
+                const height = canvasElement.height;
+                
+                // --- EAR Calculation ---
+                // Ekstrak landmark untuk mata kiri dan kanan
+                const leftEyePoints = [
+                    landmarks[LEFT_EYE_LEFT],    // p1 - sudut kiri
+                    landmarks[LEFT_EYE_TOP],     // p2 - atas
+                    landmarks[159],              // p3 - atas tengah (alternatif)
+                    landmarks[LEFT_EYE_RIGHT],   // p4 - sudut kanan
+                    landmarks[LEFT_EYE_BOTTOM],  // p5 - bawah tengah
+                    landmarks[145]               // p6 - bawah (alternatif)
+                ];
+                
+                const rightEyePoints = [
+                    landmarks[RIGHT_EYE_LEFT],   // p1 - sudut kiri
+                    landmarks[RIGHT_EYE_TOP],    // p2 - atas
+                    landmarks[386],              // p3 - atas tengah (alternatif)
+                    landmarks[RIGHT_EYE_RIGHT],  // p4 - sudut kanan
+                    landmarks[RIGHT_EYE_BOTTOM], // p5 - bawah tengah
+                    landmarks[374]               // p6 - bawah (alternatif)
+                ];
+                
+                const leftEAR = calculateEAR(leftEyePoints);
+                const rightEAR = calculateEAR(rightEyePoints);
+                ear = (leftEAR + rightEAR) / 2.0;
+                
+                // --- Deteksi Senyum ---
+                currentSmileDetected = isSmiling(landmarks, width, height);
+                
+                // Smoothing deteksi senyum
+                if (currentSmileDetected) {
+                    smileCounter = Math.min(smileCounter + 1, smileFramesRequired * 2);
+                } else {
+                    smileCounter = Math.max(0, smileCounter - 1);
+                }
+                
+                const smoothedSmileDetected = smileCounter >= smileFramesRequired;
+                
+                // --- Deteksi Menguap ---
+                const yawnResult = isYawning(landmarks, width, height);
+                mar = yawnResult.mar;
+                currentYawnDetected = yawnResult.isYawn;
+                
+                // Smoothing deteksi menguap
+                if (currentYawnDetected) {
+                    yawnCounter = Math.min(yawnCounter + 1, yawnFramesRequired * 2);
+                } else {
+                    yawnCounter = Math.max(0, yawnCounter - 1);
+                }
+                
+                const smoothedYawnDetected = yawnCounter >= yawnFramesRequired;
+                
+                // --- Logika Deteksi Ngantuk ---
+                const currentTime = Date.now() / 1000;
+                const isSmilingWhileEyesClosed = smoothedSmileDetected && (ear < EAR_THRESHOLD);
+                
+                // Gunakan threshold yang berbeda untuk senyum
+                const eyeThreshold = smoothedSmileDetected ? EAR_SMILE_THRESHOLD : EAR_THRESHOLD;
+                
+                // Deteksi mata tertutup
+                if (ear < eyeThreshold) {
+                    if (isSmilingWhileEyesClosed) {
+                        // Jika senyum, abaikan deteksi ngantuk
+                        eyeClosedStart = null;
+                    } else {
+                        // Deteksi ngantuk asli
+                        if (eyeClosedStart === null) {
+                            eyeClosedStart = currentTime;
+                        }
+                        eyesClosedTime = currentTime - eyeClosedStart;
+                        
+                        if (eyesClosedTime >= EYE_CLOSED_LONG) {
+                            alertLong = true;
+                            showAlert('NGANTUK PARAH! Mata tertutup terlalu lama!', 'danger');
+                        } else if (eyesClosedTime >= EYE_CLOSED_SHORT) {
+                            alertShort = true;
+                            showAlert('WASPADA! Tanda-tanda ngantuk terdeteksi', 'warning');
+                        }
+                    }
+                } else {
+                    eyeClosedStart = null;
+                    eyesClosedTime = 0;
+                }
+                
+                // Deteksi menguap
+                if (smoothedYawnDetected) {
+                    if (yawnStart === null) {
+                        yawnStart = currentTime;
+                    } else {
+                        const yawnElapsed = currentTime - yawnStart;
+                        if (yawnElapsed >= YAWN_DURATION) {
+                            alertYawn = true;
+                            showAlert('MENGUAP TERUS MENERUS! Istirahat disarankan', 'warning');
+                        }
+                    }
+                } else {
+                    yawnStart = null;
+                }
+                
+                // --- Tentukan Status Akhir ---
+                let status = "NORMAL";
+                let color = "#4CAF50";
+                
+                if (alertLong) {
+                    status = "NGANTUK PARAH!";
+                    color = "#ff4444";
+                } else if (alertShort) {
+                    status = "WASPADA NGANTUK";
+                    color = "#ff9800";
+                } else if (alertYawn) {
+                    status = "MENGUAP";
+                    color = "#ff9800";
+                } else if (smoothedSmileDetected) {
+                    status = "SENYUM";
+                    color = "#e91e63";
+                } else if (currentYawnDetected) {
+                    status = "MENGUAP RINGAN";
+                    color = "#ffc107";
+                } else if (ear < EAR_THRESHOLD) {
+                    status = "MATA TERTUTUP";
+                    color = "#ff9800";
+                }
+                
+                // Update tampilan
+                drawStatus(status, color, ear, mar, smileCounter, yawnCounter, eyesClosedTime);
+                
+                // Gambar landmark untuk visualisasi
+                drawLandmarks(landmarks, width, height);
+                
+                // Gambar alert visual di canvas
+                if (alertLong) {
+                    canvasCtx.font = 'bold 24px Arial';
+                    canvasCtx.fillStyle = '#ff4444';
+                    canvasCtx.fillText('⚠️ NGANTUK PARAH! ⚠️', 50, 50);
+                    
+                    canvasCtx.strokeStyle = '#ff4444';
+                    canvasCtx.lineWidth = 10;
+                    canvasCtx.strokeRect(10, 10, width-20, height-20);
+                } else if (alertShort) {
+                    canvasCtx.font = 'bold 20px Arial';
+                    canvasCtx.fillStyle = '#ff9800';
+                    canvasCtx.fillText('⚠️ WASPADA NGANTUK', 80, 50);
+                }
+                
+                if (alertYawn) {
+                    canvasCtx.font = 'bold 22px Arial';
+                    canvasCtx.fillStyle = '#ff9800';
+                    canvasCtx.fillText('😮 MENGUAP!', width/2 - 80, 100);
+                }
+                
+                // Gambar EAR value di canvas
+                canvasCtx.font = '16px Arial';
+                canvasCtx.fillStyle = ear < EAR_THRESHOLD ? '#ff4444' : '#4CAF50';
+                canvasCtx.fillText(`EAR: ${ear.toFixed(3)}`, 10, height - 30);
+                
+                canvasCtx.fillStyle = mar > 0.5 ? '#ff9800' : '#4CAF50';
+                canvasCtx.fillText(`MAR: ${mar.toFixed(3)}`, 120, height - 30);
+                
+            } else {
+                // Tidak ada wajah terdeteksi
+                eyeClosedStart = null;
+                yawnStart = null;
+                yawnCounter = 0;
+                smileCounter = 0;
+                drawStatus("TIDAK ADA WAJAH", "#ff4444", 0, 0, 0, 0, 0);
+            }
+            
+            canvasCtx.restore();
+        }
+
+        // --- Fungsi untuk menggambar landmark ---
+        function drawLandmarks(landmarks, width, height) {
+            // Gambar titik-titik penting
+            const importantPoints = [
+                LEFT_EYE_LEFT, LEFT_EYE_RIGHT, LEFT_EYE_TOP, LEFT_EYE_BOTTOM,
+                RIGHT_EYE_LEFT, RIGHT_EYE_RIGHT, RIGHT_EYE_TOP, RIGHT_EYE_BOTTOM,
+                MOUTH_INNER_UPPER, MOUTH_INNER_LOWER, MOUTH_INNER_LEFT, MOUTH_INNER_RIGHT,
+                SMILE_LEFT_CORNER, SMILE_RIGHT_CORNER
+            ];
+            
+            importantPoints.forEach(pointIdx => {
+                const point = landmarks[pointIdx];
+                const x = point.x * width;
+                const y = point.y * height;
+                
+                canvasCtx.beginPath();
+                canvasCtx.arc(x, y, 3, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = '#00ff00';
+                canvasCtx.fill();
+            });
+        }
+
+        // --- Inisialisasi MediaPipe Face Mesh ---
+        function initializeFaceMesh() {
+            faceMesh = new FaceMesh({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+                }
+            });
+            
+            faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            
+            faceMesh.onResults(onResults);
+            
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    if (isDetecting) {
+                        await faceMesh.send({image: videoElement});
+                    }
+                },
+                width: 640,
+                height: 480
+            });
+        }
+
+        // --- Event Listeners ---
+        startButton.addEventListener('click', async () => {
+            if (!isDetecting) {
+                isDetecting = true;
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                try {
+                    await camera.start();
+                    showAlert('Deteksi dimulai', 'success');
+                } catch (error) {
+                    console.error('Error starting camera:', error);
+                    showAlert('Error mengakses kamera', 'danger');
+                    isDetecting = false;
+                    startButton.disabled = false;
+                    stopButton.disabled = true;
+                }
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            isDetecting = false;
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            camera.stop();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            drawStatus("DIHENTIKAN", "#999999", 0, 0, 0, 0, 0);
+            showAlert('Deteksi dihentikan', 'success');
+            
+            // Clear all alerts
+            alertContainer.innerHTML = '';
+        });
+
+        // Inisialisasi saat halaman dimuat
+        window.addEventListener('load', () => {
+            initializeFaceMesh();
+            stopButton.disabled = true;
+            drawStatus("SIAP", "#999999", 0, 0, 0, 0, 0);
+        });
+    </script>
+</body>
+</html>
